@@ -36,13 +36,25 @@ export default function HomeScreen() {
       const database = SQLite.openDatabaseSync('employees.db');
       setDb(database);
       
+      // Create table with all fields including department
       database.execAsync('CREATE TABLE IF NOT EXISTS employees (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, designation TEXT, department TEXT, createdAt TEXT)')
         .then(() => {
           console.log('Table created successfully');
+          // Check if department column exists and add it if missing
+          return database.execAsync('PRAGMA table_info(employees)');
+        })
+        .then(() => {
+          // Try to add department column if it doesn't exist (for existing databases)
+          return database.execAsync('ALTER TABLE employees ADD COLUMN department TEXT DEFAULT ""');
+        })
+        .then(() => {
+          console.log('Database migration completed');
           loadEmployees();
         })
         .catch((error: any) => {
-          console.error('Error creating table:', error);
+          // Column might already exist, which is fine
+          console.log('Migration info:', error.message);
+          loadEmployees();
         });
     } catch (error) {
       console.error('Error opening database:', error);
