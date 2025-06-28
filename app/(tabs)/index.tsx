@@ -1,8 +1,9 @@
-import * as SQLite from 'expo-sqlite';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import React, { useEffect, useState } from 'react';
 import {
     Alert,
     FlatList,
+    Platform,
     ScrollView,
     StatusBar,
     StyleSheet,
@@ -20,88 +21,175 @@ interface Employee {
   createdAt: string;
 }
 
+// Platform-specific database interface
+interface DatabaseInterface {
+  addEmployee: (employee: Omit<Employee, 'id'>) => Promise<void>;
+  loadEmployees: () => Promise<Employee[]>;
+  deleteEmployee: (id: number) => Promise<void>;
+  clearAllEmployees: () => Promise<void>;
+}
+
+// Web storage implementation
+class WebStorage implements DatabaseInterface {
+  private readonly STORAGE_KEY = 'employees';
+
+  async addEmployee(employee: Omit<Employee, 'id'>): Promise<void> {
+    const employees = await this.loadEmployees();
+    const newEmployee: Employee = {
+      ...employee,
+      id: Date.now(),
+    };
+    const updatedEmployees = [newEmployee, ...employees];
+    await AsyncStorage.setItem(this.STORAGE_KEY, JSON.stringify(updatedEmployees));
+  }
+
+  async loadEmployees(): Promise<Employee[]> {
+    try {
+      const storedEmployees = await AsyncStorage.getItem(this.STORAGE_KEY);
+      return storedEmployees ? JSON.parse(storedEmployees) : [];
+    } catch (error) {
+      console.error('Error loading employees from storage:', error);
+      return [];
+    }
+  }
+
+  async deleteEmployee(id: number): Promise<void> {
+    const employees = await this.loadEmployees();
+    const updatedEmployees = employees.filter(emp => emp.id !== id);
+    await AsyncStorage.setItem(this.STORAGE_KEY, JSON.stringify(updatedEmployees));
+  }
+
+  async clearAllEmployees(): Promise<void> {
+    await AsyncStorage.setItem(this.STORAGE_KEY, JSON.stringify([]));
+  }
+}
+
+// Mobile SQLite implementation
+class MobileStorage implements DatabaseInterface {
+  private db: any = null;
+
+  async initialize(): Promise<void> {
+    if (Platform.OS === 'web') return;
+    
+    try {
+      // Dynamic import only on mobile
+      const SQLite = await import('expo-sqlite');
+      this.db = SQLite.openDatabaseSync('employees.db');
+      
+      await this.db.execAsync(
+        'CREATE TABLE IF NOT EXISTS employees (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, designation TEXT, department TEXT, createdAt TEXT)'
+      );
+      
+      // Try to add department column for existing databases
+      try {
+        await this.db.execAsync('ALTER TABLE employees ADD COLUMN department TEXT DEFAULT ""');
+      } catch (error: any) {
+        // Column might already exist, which is fine
+        console.log('Migration info:', error.message);
+      }
+    } catch (error) {
+      console.error('Error initializing mobile database:', error);
+    }
+  }
+
+  async addEmployee(employee: Omit<Employee, 'id'>): Promise<void> {
+    if (!this.db) throw new Error('Database not initialized');
+    
+    const result = await this.db.runAsync(
+      'INSERT INTO employees (name, designation, department, createdAt) VALUES (?, ?, ?, ?)',
+      [employee.name, employee.designation, employee.department, employee.createdAt]
+    );
+    console.log('Employee added successfully with ID:', result.lastInsertRowId);
+  }
+
+  async loadEmployees(): Promise<Employee[]> {
+    if (!this.db) return [];
+    
+    try {
+      const result = await this.db.getAllAsync('SELECT * FROM employees ORDER BY createdAt DESC');
+      return result as Employee[];
+    } catch (error) {
+      console.error('Error loading employees:', error);
+      return [];
+    }
+  }
+
+  async deleteEmployee(id: number): Promise<void> {
+    if (!this.db) throw new Error('Database not initialized');
+    
+    await this.db.runAsync('DELETE FROM employees WHERE id = ?', [id]);
+    console.log('Employee deleted successfully');
+  }
+
+  async clearAllEmployees(): Promise<void> {
+    if (!this.db) throw new Error('Database not initialized');
+    
+    await this.db.runAsync('DELETE FROM employees', []);
+    console.log('All employees deleted successfully');
+  }
+}
+
 export default function HomeScreen() {
   const [name, setName] = useState('');
   const [designation, setDesignation] = useState('');
   const [department, setDepartment] = useState('');
   const [employees, setEmployees] = useState<Employee[]>([]);
-  const [db, setDb] = useState<SQLite.SQLiteDatabase | null>(null);
+  const [storage, setStorage] = useState<DatabaseInterface | null>(null);
 
   useEffect(() => {
-    initDatabase();
+    initializeStorage();
   }, []);
 
-  const initDatabase = () => {
-    try {
-      const database = SQLite.openDatabaseSync('employees.db');
-      setDb(database);
-      
-      // Create table with all fields including department
-      database.execAsync('CREATE TABLE IF NOT EXISTS employees (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, designation TEXT, department TEXT, createdAt TEXT)')
-        .then(() => {
-          console.log('Table created successfully');
-          // Check if department column exists and add it if missing
-          return database.execAsync('PRAGMA table_info(employees)');
-        })
-        .then(() => {
-          // Try to add department column if it doesn't exist (for existing databases)
-          return database.execAsync('ALTER TABLE employees ADD COLUMN department TEXT DEFAULT ""');
-        })
-        .then(() => {
-          console.log('Database migration completed');
-          loadEmployees();
-        })
-        .catch((error: any) => {
-          // Column might already exist, which is fine
-          console.log('Migration info:', error.message);
-          loadEmployees();
-        });
-    } catch (error) {
-      console.error('Error opening database:', error);
-    }
-  };
-
-  const loadEmployees = () => {
-    if (!db) return;
+  const initializeStorage = async () => {
+    let storageInstance: DatabaseInterface;
     
-    db.getAllAsync('SELECT * FROM employees ORDER BY createdAt DESC')
-      .then((result) => {
-        setEmployees(result as Employee[]);
-      })
-      .catch((error: any) => {
-        console.error('Error loading employees:', error);
-      });
+    if (Platform.OS === 'web') {
+      storageInstance = new WebStorage();
+    } else {
+      storageInstance = new MobileStorage();
+      await (storageInstance as MobileStorage).initialize();
+    }
+    
+    setStorage(storageInstance);
+    
+    // Load initial data
+    const employeeList = await storageInstance.loadEmployees();
+    setEmployees(employeeList);
   };
 
-  const addEmployee = () => {
+  const addEmployee = async () => {
     if (!name.trim() || !designation.trim() || !department.trim()) {
       Alert.alert('Validation Error', 'Please enter name, designation, and department');
       return;
     }
 
-    if (!db) return;
+    if (!storage) return;
 
-    const currentTime = new Date().toISOString();
-    
-    db.runAsync('INSERT INTO employees (name, designation, department, createdAt) VALUES (?, ?, ?, ?)', 
-      [name.trim(), designation.trim(), department.trim(), currentTime])
-      .then((result) => {
-        console.log('Employee added successfully with ID:', result.lastInsertRowId);
-        setName('');
-        setDesignation('');
-        setDepartment('');
-        loadEmployees();
-        Alert.alert('Success', 'Employee added successfully!');
-      })
-      .catch((error) => {
-        console.error('Error adding employee:', error);
-        Alert.alert('Error', 'Failed to add employee');
+    try {
+      const currentTime = new Date().toISOString();
+      await storage.addEmployee({
+        name: name.trim(),
+        designation: designation.trim(),
+        department: department.trim(),
+        createdAt: currentTime,
       });
+
+      setName('');
+      setDesignation('');
+      setDepartment('');
+      
+      // Reload employees
+      const updatedEmployees = await storage.loadEmployees();
+      setEmployees(updatedEmployees);
+      
+      Alert.alert('Success', 'Employee added successfully!');
+    } catch (error) {
+      console.error('Error adding employee:', error);
+      Alert.alert('Error', 'Failed to add employee');
+    }
   };
 
   const deleteEmployee = (id: number) => {
-    if (!db) return;
-
     Alert.alert(
       'Confirm Delete',
       'Are you sure you want to delete this employee?',
@@ -110,17 +198,18 @@ export default function HomeScreen() {
         {
           text: 'Delete',
           style: 'destructive',
-          onPress: () => {
-            db.runAsync('DELETE FROM employees WHERE id = ?', [id])
-              .then(() => {
-                console.log('Employee deleted successfully');
-                loadEmployees();
-                Alert.alert('Success', 'Employee deleted successfully!');
-              })
-              .catch((error) => {
-                console.error('Error deleting employee:', error);
-                Alert.alert('Error', 'Failed to delete employee');
-              });
+          onPress: async () => {
+            if (!storage) return;
+            
+            try {
+              await storage.deleteEmployee(id);
+              const updatedEmployees = await storage.loadEmployees();
+              setEmployees(updatedEmployees);
+              Alert.alert('Success', 'Employee deleted successfully!');
+            } catch (error) {
+              console.error('Error deleting employee:', error);
+              Alert.alert('Error', 'Failed to delete employee');
+            }
           },
         },
       ]
@@ -128,8 +217,6 @@ export default function HomeScreen() {
   };
 
   const clearAllEmployees = () => {
-    if (!db) return;
-
     Alert.alert(
       'Confirm Clear All',
       'Are you sure you want to delete all employees? This action cannot be undone.',
@@ -138,17 +225,17 @@ export default function HomeScreen() {
         {
           text: 'Clear All',
           style: 'destructive',
-          onPress: () => {
-            db.runAsync('DELETE FROM employees', [])
-              .then(() => {
-                console.log('All employees deleted successfully');
-                setEmployees([]);
-                Alert.alert('Success', 'All employees deleted successfully!');
-              })
-              .catch((error) => {
-                console.error('Error clearing employees:', error);
-                Alert.alert('Error', 'Failed to clear employees');
-              });
+          onPress: async () => {
+            if (!storage) return;
+            
+            try {
+              await storage.clearAllEmployees();
+              setEmployees([]);
+              Alert.alert('Success', 'All employees deleted successfully!');
+            } catch (error) {
+              console.error('Error clearing employees:', error);
+              Alert.alert('Error', 'Failed to clear employees');
+            }
           },
         },
       ]
@@ -184,7 +271,9 @@ export default function HomeScreen() {
       {/* Header */}
       <View style={styles.header}>
         <Text style={styles.title}>Employee Management</Text>
-        <Text style={styles.subtitle}>Professional HR System</Text>
+        <Text style={styles.subtitle}>
+          Professional HR System {Platform.OS === 'web' ? '(Web Version)' : '(Mobile Version)'}
+        </Text>
       </View>
 
       <ScrollView style={styles.scrollView} showsVerticalScrollIndicator={false}>
@@ -270,11 +359,14 @@ export default function HomeScreen() {
               This professional HR system provides:
             </Text>
             <Text style={styles.listItem}>• Complete employee record management</Text>
-            <Text style={styles.listItem}>• Secure SQLite database storage</Text>
+            <Text style={styles.listItem}>
+              • {Platform.OS === 'web' ? 'Browser storage (AsyncStorage)' : 'Secure SQLite database storage'}
+            </Text>
             <Text style={styles.listItem}>• Real-time data synchronization</Text>
             <Text style={styles.listItem}>• Professional user interface</Text>
             <Text style={styles.listItem}>• Data validation and error handling</Text>
             <Text style={styles.listItem}>• Confirmation dialogs for data safety</Text>
+            <Text style={styles.listItem}>• Cross-platform compatibility (Mobile & Web)</Text>
           </View>
         </View>
       </ScrollView>
