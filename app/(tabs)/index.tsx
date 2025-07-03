@@ -1,16 +1,19 @@
+import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { Image as ExpoImage } from 'expo-image';
+import * as ImagePicker from 'expo-image-picker';
 import React, { useEffect, useState } from 'react';
 import {
-    Alert,
-    FlatList,
-    Platform,
-    ScrollView,
-    StatusBar,
-    StyleSheet,
-    Text,
-    TextInput,
-    TouchableOpacity,
-    View,
+  Alert,
+  FlatList,
+  Platform,
+  ScrollView,
+  StatusBar,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
 } from 'react-native';
 
 interface Employee {
@@ -19,6 +22,7 @@ interface Employee {
   designation: string;
   department: string;
   createdAt: string;
+  photoUrl?: string;
 }
 
 // Platform-specific database interface
@@ -135,6 +139,7 @@ export default function HomeScreen() {
   const [department, setDepartment] = useState('');
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [storage, setStorage] = useState<DatabaseInterface | null>(null);
+  const [photo, setPhoto] = useState<string | null>(null);
 
   useEffect(() => {
     initializeStorage();
@@ -157,31 +162,65 @@ export default function HomeScreen() {
     setEmployees(employeeList);
   };
 
+  const pickImage = async () => {
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== 'granted') {
+      Alert.alert('Permission Denied', 'Permission to access media library is required!');
+      return;
+    }
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      allowsEditing: true,
+      aspect: [1, 1],
+      quality: 0.7,
+      base64: Platform.OS === 'web', // Only get base64 on web
+    });
+    if (!result.canceled && result.assets && result.assets.length > 0) {
+      const pickedUri = result.assets[0].uri;
+      if (Platform.OS === 'web') {
+        if (result.assets[0].base64) {
+          setPhoto(`data:image/jpeg;base64,${result.assets[0].base64}`);
+        } else {
+          setPhoto(pickedUri); // fallback
+        }
+      } else {
+        setPhoto(pickedUri); // Use picker URI directly on Android/iOS
+      }
+    }
+  };
+
+  const uploadImageToBackend = async (uri: string): Promise<string> => {
+    // TODO: Replace with actual upload logic
+    // For now, just return the local URI
+    return uri;
+  };
+
   const addEmployee = async () => {
     if (!name.trim() || !designation.trim() || !department.trim()) {
       Alert.alert('Validation Error', 'Please enter name, designation, and department');
       return;
     }
-
     if (!storage) return;
-
     try {
+      let uploadedPhotoUrl = '';
+      if (photo) {
+        uploadedPhotoUrl = await uploadImageToBackend(photo);
+      }
       const currentTime = new Date().toISOString();
       await storage.addEmployee({
         name: name.trim(),
         designation: designation.trim(),
         department: department.trim(),
         createdAt: currentTime,
+        photoUrl: uploadedPhotoUrl,
       });
-
       setName('');
       setDesignation('');
       setDepartment('');
-      
+      setPhoto(null);
       // Reload employees
       const updatedEmployees = await storage.loadEmployees();
       setEmployees(updatedEmployees);
-      
       Alert.alert('Success', 'Employee added successfully!');
     } catch (error) {
       console.error('Error adding employee:', error);
@@ -245,7 +284,20 @@ export default function HomeScreen() {
   const renderEmployee = ({ item }: { item: Employee }) => (
     <View style={styles.employeeCard}>
       <View style={styles.employeeInfo}>
-        <Text style={styles.employeeName}>{item.name}</Text>
+        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+          {item.photoUrl ? (
+            <ExpoImage
+              source={{ uri: item.photoUrl }}
+              style={{ width: 40, height: 40, borderRadius: 20, marginRight: 10 }}
+              contentFit="cover"
+            />
+          ) : (
+            <View style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: '#eee', marginRight: 10, alignItems: 'center', justifyContent: 'center' }}>
+              <MaterialIcons name="person" size={28} color="#bbb" />
+            </View>
+          )}
+          <Text style={styles.employeeName}>{item.name}</Text>
+        </View>
         <Text style={styles.employeeDesignation}>{item.designation}</Text>
         <View style={styles.departmentContainer}>
           <Text style={styles.departmentLabel}>Department:</Text>
@@ -312,6 +364,23 @@ export default function HomeScreen() {
               onChangeText={setDepartment}
               placeholderTextColor="#999"
             />
+          </View>
+          
+          <View style={styles.inputGroup}>
+            <Text style={styles.inputLabel}>Photo</Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+              <TouchableOpacity style={styles.photoButton} onPress={pickImage}>
+                <MaterialIcons name="cloud-upload" size={20} color="#fff" style={{ marginRight: 8 }} />
+                <Text style={styles.photoButtonText}>Upload Image</Text>
+              </TouchableOpacity>
+              {photo && (
+                <ExpoImage
+                  source={{ uri: photo }}
+                  style={{ width: 48, height: 48, borderRadius: 24, marginLeft: 12 }}
+                  contentFit="cover"
+                />
+              )}
+            </View>
           </View>
           
           <TouchableOpacity style={styles.addButton} onPress={addEmployee}>
@@ -606,5 +675,16 @@ const styles = StyleSheet.create({
     marginBottom: 6,
     marginLeft: 8,
     lineHeight: 20,
+  },
+  photoButton: {
+    backgroundColor: '#007bff',
+    paddingVertical: 6,
+    paddingHorizontal: 16,
+    borderRadius: 6,
+  },
+  photoButtonText: {
+    color: '#fff',
+    fontWeight: '600',
+    fontSize: 15,
   },
 });
