@@ -1,12 +1,12 @@
 import React, { useState } from 'react';
 import {
-  ScrollView,
-  StyleSheet,
-  Switch,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  View,
+    ScrollView,
+    StyleSheet,
+    Switch,
+    Text,
+    TextInput,
+    TouchableOpacity,
+    View,
 } from 'react-native';
 
 export default function ExploreScreen() {
@@ -88,6 +88,14 @@ export default function ExploreScreen() {
         </View>
       </View>
 
+      {/* Image Upload Example */}
+      <View style={styles.section}>
+        <Text style={styles.sectionTitle}>Image Upload Example</Text>
+        <Text style={styles.practiceText}>
+          Try integrating an image picker to allow users to upload and display a profile photo, just like in the main Employee Management screen.
+        </Text>
+      </View>
+
       {/* Practice Section */}
       <View style={styles.section}>
         <Text style={styles.sectionTitle}>Practice Ideas</Text>
@@ -99,6 +107,7 @@ export default function ExploreScreen() {
         <Text style={styles.practiceItem}>• Add image display</Text>
         <Text style={styles.practiceItem}>• Create a todo list</Text>
         <Text style={styles.practiceItem}>• Add navigation between screens</Text>
+        <Text style={styles.practiceItem}>• Allow users to upload and display a profile photo</Text>
       </View>
     </ScrollView>
   );
