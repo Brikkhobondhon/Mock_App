@@ -1,12 +1,11 @@
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import * as FileSystem from 'expo-file-system';
+import { Image as ExpoImage } from 'expo-image';
 import * as ImagePicker from 'expo-image-picker';
 import React, { useEffect, useState } from 'react';
 import {
   Alert,
   FlatList,
-  Image,
   Platform,
   ScrollView,
   StatusBar,
@@ -178,28 +177,14 @@ export default function HomeScreen() {
     });
     if (!result.canceled && result.assets && result.assets.length > 0) {
       const pickedUri = result.assets[0].uri;
-      if (Platform.OS !== 'web') {
-        // Copy to app's document directory for robust storage
-        const fileName = pickedUri.split('/').pop();
-        if (FileSystem.documentDirectory && fileName) {
-          const newPath = FileSystem.documentDirectory + fileName;
-          try {
-            await FileSystem.copyAsync({ from: pickedUri, to: newPath });
-            setPhoto(newPath);
-          } catch (err) {
-            Alert.alert('Error', 'Failed to save image to app storage.');
-            setPhoto(pickedUri); // fallback
-          }
-        } else {
-          setPhoto(pickedUri); // fallback if path or filename is missing
-        }
-      } else {
-        // On web, use base64
+      if (Platform.OS === 'web') {
         if (result.assets[0].base64) {
           setPhoto(`data:image/jpeg;base64,${result.assets[0].base64}`);
         } else {
           setPhoto(pickedUri); // fallback
         }
+      } else {
+        setPhoto(pickedUri); // Use picker URI directly on Android/iOS
       }
     }
   };
@@ -301,9 +286,10 @@ export default function HomeScreen() {
       <View style={styles.employeeInfo}>
         <View style={{ flexDirection: 'row', alignItems: 'center' }}>
           {item.photoUrl ? (
-            <Image
+            <ExpoImage
               source={{ uri: item.photoUrl }}
               style={{ width: 40, height: 40, borderRadius: 20, marginRight: 10 }}
+              contentFit="cover"
             />
           ) : (
             <View style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: '#eee', marginRight: 10, alignItems: 'center', justifyContent: 'center' }}>
@@ -388,9 +374,10 @@ export default function HomeScreen() {
                 <Text style={styles.photoButtonText}>Upload Image</Text>
               </TouchableOpacity>
               {photo && (
-                <Image
+                <ExpoImage
                   source={{ uri: photo }}
                   style={{ width: 48, height: 48, borderRadius: 24, marginLeft: 12 }}
+                  contentFit="cover"
                 />
               )}
             </View>
