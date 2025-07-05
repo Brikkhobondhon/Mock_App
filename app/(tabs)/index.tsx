@@ -1,137 +1,22 @@
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Image as ExpoImage } from 'expo-image';
 import * as ImagePicker from 'expo-image-picker';
 import React, { useEffect, useState } from 'react';
 import {
-  Alert,
-  FlatList,
-  Platform,
-  ScrollView,
-  StatusBar,
-  StyleSheet,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  View,
+    Alert,
+    FlatList,
+    Platform,
+    StatusBar,
+    StyleSheet,
+    Text,
+    TextInput,
+    TouchableOpacity,
+    View
 } from 'react-native';
+import { Employee } from '../../lib/supabase';
+import { DatabaseInterface, SupabaseStorage } from '../../lib/supabaseService';
 
-interface Employee {
-  id: number;
-  name: string;
-  designation: string;
-  department: string;
-  createdAt: string;
-  photoUrl?: string;
-}
-
-// Platform-specific database interface
-interface DatabaseInterface {
-  addEmployee: (employee: Omit<Employee, 'id'>) => Promise<void>;
-  loadEmployees: () => Promise<Employee[]>;
-  deleteEmployee: (id: number) => Promise<void>;
-  clearAllEmployees: () => Promise<void>;
-}
-
-// Web storage implementation
-class WebStorage implements DatabaseInterface {
-  private readonly STORAGE_KEY = 'employees';
-
-  async addEmployee(employee: Omit<Employee, 'id'>): Promise<void> {
-    const employees = await this.loadEmployees();
-    const newEmployee: Employee = {
-      ...employee,
-      id: Date.now(),
-    };
-    const updatedEmployees = [newEmployee, ...employees];
-    await AsyncStorage.setItem(this.STORAGE_KEY, JSON.stringify(updatedEmployees));
-  }
-
-  async loadEmployees(): Promise<Employee[]> {
-    try {
-      const storedEmployees = await AsyncStorage.getItem(this.STORAGE_KEY);
-      return storedEmployees ? JSON.parse(storedEmployees) : [];
-    } catch (error) {
-      console.error('Error loading employees from storage:', error);
-      return [];
-    }
-  }
-
-  async deleteEmployee(id: number): Promise<void> {
-    const employees = await this.loadEmployees();
-    const updatedEmployees = employees.filter(emp => emp.id !== id);
-    await AsyncStorage.setItem(this.STORAGE_KEY, JSON.stringify(updatedEmployees));
-  }
-
-  async clearAllEmployees(): Promise<void> {
-    await AsyncStorage.setItem(this.STORAGE_KEY, JSON.stringify([]));
-  }
-}
-
-// Mobile SQLite implementation
-class MobileStorage implements DatabaseInterface {
-  private db: any = null;
-
-  async initialize(): Promise<void> {
-    if (Platform.OS === 'web') return;
-    
-    try {
-      // Dynamic import only on mobile
-      const SQLite = await import('expo-sqlite');
-      this.db = SQLite.openDatabaseSync('employees.db');
-      
-      await this.db.execAsync(
-        'CREATE TABLE IF NOT EXISTS employees (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, designation TEXT, department TEXT, createdAt TEXT)'
-      );
-      
-      // Try to add department column for existing databases
-      try {
-        await this.db.execAsync('ALTER TABLE employees ADD COLUMN department TEXT DEFAULT ""');
-      } catch (error: any) {
-        // Column might already exist, which is fine
-        console.log('Migration info:', error.message);
-      }
-    } catch (error) {
-      console.error('Error initializing mobile database:', error);
-    }
-  }
-
-  async addEmployee(employee: Omit<Employee, 'id'>): Promise<void> {
-    if (!this.db) throw new Error('Database not initialized');
-    
-    const result = await this.db.runAsync(
-      'INSERT INTO employees (name, designation, department, createdAt) VALUES (?, ?, ?, ?)',
-      [employee.name, employee.designation, employee.department, employee.createdAt]
-    );
-    console.log('Employee added successfully with ID:', result.lastInsertRowId);
-  }
-
-  async loadEmployees(): Promise<Employee[]> {
-    if (!this.db) return [];
-    
-    try {
-      const result = await this.db.getAllAsync('SELECT * FROM employees ORDER BY createdAt DESC');
-      return result as Employee[];
-    } catch (error) {
-      console.error('Error loading employees:', error);
-      return [];
-    }
-  }
-
-  async deleteEmployee(id: number): Promise<void> {
-    if (!this.db) throw new Error('Database not initialized');
-    
-    await this.db.runAsync('DELETE FROM employees WHERE id = ?', [id]);
-    console.log('Employee deleted successfully');
-  }
-
-  async clearAllEmployees(): Promise<void> {
-    if (!this.db) throw new Error('Database not initialized');
-    
-    await this.db.runAsync('DELETE FROM employees', []);
-    console.log('All employees deleted successfully');
-  }
-}
+// Using Supabase for all platforms
 
 export default function HomeScreen() {
   const [name, setName] = useState('');
@@ -142,24 +27,35 @@ export default function HomeScreen() {
   const [photo, setPhoto] = useState<string | null>(null);
 
   useEffect(() => {
-    initializeStorage();
+    const init = async () => {
+      await initializeStorage();
+    };
+    init();
   }, []);
 
   const initializeStorage = async () => {
-    let storageInstance: DatabaseInterface;
-    
-    if (Platform.OS === 'web') {
-      storageInstance = new WebStorage();
-    } else {
-      storageInstance = new MobileStorage();
-      await (storageInstance as MobileStorage).initialize();
+    try {
+      console.log('🚀 Initializing Supabase storage...');
+      const storageInstance = new SupabaseStorage();
+      setStorage(storageInstance);
+      
+      // Load initial data
+      console.log('📥 Loading initial employees...');
+      const employeeList = await storageInstance.loadEmployees();
+      console.log('📋 Initial employees loaded:', employeeList.length);
+      setEmployees(employeeList);
+      
+      // Set up real-time subscription
+      console.log('🔗 Setting up real-time subscription...');
+      const subscription = storageInstance.subscribeToEmployees((updatedEmployees: Employee[]) => {
+        console.log('🔄 Real-time update received:', updatedEmployees.length, 'employees');
+        setEmployees(updatedEmployees);
+      });
+      
+      console.log('✅ Storage initialization complete');
+    } catch (error) {
+      console.error('❌ Error initializing storage:', error);
     }
-    
-    setStorage(storageInstance);
-    
-    // Load initial data
-    const employeeList = await storageInstance.loadEmployees();
-    setEmployees(employeeList);
   };
 
   const pickImage = async () => {
@@ -211,8 +107,8 @@ export default function HomeScreen() {
         name: name.trim(),
         designation: designation.trim(),
         department: department.trim(),
-        createdAt: currentTime,
-        photoUrl: uploadedPhotoUrl,
+        created_at: currentTime,
+        photo_url: uploadedPhotoUrl,
       });
       setName('');
       setDesignation('');
@@ -222,9 +118,13 @@ export default function HomeScreen() {
       const updatedEmployees = await storage.loadEmployees();
       setEmployees(updatedEmployees);
       Alert.alert('Success', 'Employee added successfully!');
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error adding employee:', error);
-      Alert.alert('Error', 'Failed to add employee');
+      if (error.message?.includes('already exists')) {
+        Alert.alert('Duplicate Employee', 'An employee with the same name, designation, and department already exists.');
+      } else {
+        Alert.alert('Error', 'Failed to add employee');
+      }
     }
   };
 
@@ -281,13 +181,42 @@ export default function HomeScreen() {
     );
   };
 
+  const removeDuplicates = () => {
+    Alert.alert(
+      'Remove Duplicates',
+      'This will remove duplicate employees (same name, designation, and department). The most recent entry will be kept.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Remove Duplicates',
+          style: 'default',
+          onPress: async () => {
+            if (!storage) return;
+            
+            try {
+              const result = await storage.removeDuplicates();
+              Alert.alert('Success', result.message);
+              
+              // Reload employees to show updated list
+              const updatedEmployees = await storage.loadEmployees();
+              setEmployees(updatedEmployees);
+            } catch (error) {
+              console.error('Error removing duplicates:', error);
+              Alert.alert('Error', 'Failed to remove duplicates');
+            }
+          },
+        },
+      ]
+    );
+  };
+
   const renderEmployee = ({ item }: { item: Employee }) => (
     <View style={styles.employeeCard}>
       <View style={styles.employeeInfo}>
         <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-          {item.photoUrl ? (
+          {item.photo_url ? (
             <ExpoImage
-              source={{ uri: item.photoUrl }}
+              source={{ uri: item.photo_url }}
               style={{ width: 40, height: 40, borderRadius: 20, marginRight: 10 }}
               contentFit="cover"
             />
@@ -304,7 +233,7 @@ export default function HomeScreen() {
           <Text style={styles.employeeDepartment}>{item.department}</Text>
         </View>
         <Text style={styles.employeeDate}>
-          Added: {new Date(item.createdAt).toLocaleDateString()}
+          Added: {new Date(item.created_at).toLocaleDateString()}
         </Text>
       </View>
       <TouchableOpacity
@@ -316,129 +245,161 @@ export default function HomeScreen() {
     </View>
   );
 
-  return (
-    <View style={styles.container}>
-      <StatusBar barStyle="dark-content" backgroundColor="#f8f9fa" />
-      
+  // Create header component for FlatList
+  const ListHeaderComponent = () => (
+    <>
       {/* Header */}
       <View style={styles.header}>
         <Text style={styles.title}>Employee Management</Text>
         <Text style={styles.subtitle}>
-          Professional HR System {Platform.OS === 'web' ? '(Web Version)' : '(Mobile Version)'}
+          Professional HR System with Real-time PostgreSQL Database
         </Text>
       </View>
 
-      <ScrollView style={styles.scrollView} showsVerticalScrollIndicator={false}>
-        {/* Input Form */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Add New Employee</Text>
-          
-          <View style={styles.inputGroup}>
-            <Text style={styles.inputLabel}>Full Name</Text>
-            <TextInput
-              style={styles.input}
-              placeholder="Enter employee's full name"
-              value={name}
-              onChangeText={setName}
-              placeholderTextColor="#999"
-            />
-          </View>
-          
-          <View style={styles.inputGroup}>
-            <Text style={styles.inputLabel}>Designation</Text>
-            <TextInput
-              style={styles.input}
-              placeholder="e.g., Software Engineer, Manager"
-              value={designation}
-              onChangeText={setDesignation}
-              placeholderTextColor="#999"
-            />
-          </View>
-
-          <View style={styles.inputGroup}>
-            <Text style={styles.inputLabel}>Department</Text>
-            <TextInput
-              style={styles.input}
-              placeholder="e.g., Engineering, Marketing, HR"
-              value={department}
-              onChangeText={setDepartment}
-              placeholderTextColor="#999"
-            />
-          </View>
-          
-          <View style={styles.inputGroup}>
-            <Text style={styles.inputLabel}>Photo</Text>
-            <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-              <TouchableOpacity style={styles.photoButton} onPress={pickImage}>
-                <MaterialIcons name="cloud-upload" size={20} color="#fff" style={{ marginRight: 8 }} />
-                <Text style={styles.photoButtonText}>Upload Image</Text>
-              </TouchableOpacity>
-              {photo && (
-                <ExpoImage
-                  source={{ uri: photo }}
-                  style={{ width: 48, height: 48, borderRadius: 24, marginLeft: 12 }}
-                  contentFit="cover"
-                />
-              )}
-            </View>
-          </View>
-          
-          <TouchableOpacity style={styles.addButton} onPress={addEmployee}>
-            <Text style={styles.buttonText}>Add Employee</Text>
-          </TouchableOpacity>
+      {/* Input Form */}
+      <View style={styles.section}>
+        <Text style={styles.sectionTitle}>Add New Employee</Text>
+        
+        <View style={styles.inputGroup}>
+          <Text style={styles.inputLabel}>Full Name</Text>
+          <TextInput
+            style={styles.input}
+            placeholder="Enter employee's full name"
+            value={name}
+            onChangeText={setName}
+            placeholderTextColor="#999"
+          />
         </View>
-
-        {/* Employee List */}
-        <View style={styles.section}>
-          <View style={styles.listHeader}>
-            <Text style={styles.sectionTitle}>Employee Directory</Text>
-            {employees.length > 0 && (
-              <TouchableOpacity style={styles.clearButton} onPress={clearAllEmployees}>
-                <Text style={styles.clearButtonText}>Clear All</Text>
-              </TouchableOpacity>
-            )}
-          </View>
-          
-          {employees.length === 0 ? (
-            <View style={styles.emptyState}>
-              <Text style={styles.emptyIcon}>👥</Text>
-              <Text style={styles.emptyText}>No employees added yet</Text>
-              <Text style={styles.emptySubtext}>Start by adding your first employee above</Text>
-            </View>
-          ) : (
-            <View style={styles.statsContainer}>
-              <Text style={styles.statsText}>Total Employees: {employees.length}</Text>
-            </View>
-          )}
-          
-          <FlatList
-            data={employees}
-            renderItem={renderEmployee}
-            keyExtractor={(item) => item.id.toString()}
-            scrollEnabled={false}
-            style={styles.employeeList}
+        
+        <View style={styles.inputGroup}>
+          <Text style={styles.inputLabel}>Designation</Text>
+          <TextInput
+            style={styles.input}
+            placeholder="e.g., Software Engineer, Manager"
+            value={designation}
+            onChangeText={setDesignation}
+            placeholderTextColor="#999"
           />
         </View>
 
-        {/* Info Section */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>System Features</Text>
-          <View style={styles.infoBox}>
-            <Text style={styles.infoText}>
-              This professional HR system provides:
-            </Text>
-            <Text style={styles.listItem}>• Complete employee record management</Text>
-            <Text style={styles.listItem}>
-              • {Platform.OS === 'web' ? 'Browser storage (AsyncStorage)' : 'Secure SQLite database storage'}
-            </Text>
-            <Text style={styles.listItem}>• Real-time data synchronization</Text>
-            <Text style={styles.listItem}>• Professional user interface</Text>
-            <Text style={styles.listItem}>• Data validation and error handling</Text>
-            <Text style={styles.listItem}>• Confirmation dialogs for data safety</Text>
-            <Text style={styles.listItem}>• Cross-platform compatibility (Mobile & Web)</Text>
+        <View style={styles.inputGroup}>
+          <Text style={styles.inputLabel}>Department</Text>
+          <TextInput
+            style={styles.input}
+            placeholder="e.g., Engineering, Marketing, HR"
+            value={department}
+            onChangeText={setDepartment}
+            placeholderTextColor="#999"
+          />
+        </View>
+        
+        <View style={styles.inputGroup}>
+          <Text style={styles.inputLabel}>Photo</Text>
+          <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+            <TouchableOpacity style={styles.photoButton} onPress={pickImage}>
+              <MaterialIcons name="cloud-upload" size={20} color="#fff" style={{ marginRight: 8 }} />
+              <Text style={styles.photoButtonText}>Upload Image</Text>
+            </TouchableOpacity>
+            {photo && (
+              <ExpoImage
+                source={{ uri: photo }}
+                style={{ width: 48, height: 48, borderRadius: 24, marginLeft: 12 }}
+                contentFit="cover"
+              />
+            )}
           </View>
         </View>
-      </ScrollView>
+        
+        <TouchableOpacity style={styles.addButton} onPress={addEmployee}>
+          <Text style={styles.buttonText}>Add Employee</Text>
+        </TouchableOpacity>
+      </View>
+
+      {/* Employee List Header */}
+      <View style={styles.section}>
+        <View style={styles.listHeader}>
+          <Text style={styles.sectionTitle}>Employee Directory ({employees.length})</Text>
+          <View style={{ flexDirection: 'row', gap: 10 }}>
+            <TouchableOpacity 
+              style={[styles.clearButton, { backgroundColor: '#3498db' }]} 
+              onPress={async () => {
+                if (storage) {
+                  const updatedEmployees = await storage.loadEmployees();
+                  setEmployees(updatedEmployees);
+                }
+              }}
+            >
+              <Text style={styles.clearButtonText}>🔄 Refresh</Text>
+            </TouchableOpacity>
+            {employees.length > 0 && (
+              <>
+                <TouchableOpacity 
+                  style={[styles.clearButton, { backgroundColor: '#f39c12' }]} 
+                  onPress={removeDuplicates}
+                >
+                  <Text style={styles.clearButtonText}>🧹 Remove Duplicates</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.clearButton} onPress={clearAllEmployees}>
+                  <Text style={styles.clearButtonText}>Clear All</Text>
+                </TouchableOpacity>
+              </>
+            )}
+          </View>
+        </View>
+        
+        {employees.length === 0 ? (
+          <View style={styles.emptyState}>
+            <Text style={styles.emptyIcon}>👥</Text>
+            <Text style={styles.emptyText}>No employees added yet</Text>
+            <Text style={styles.emptySubtext}>Start by adding your first employee above</Text>
+          </View>
+        ) : (
+          <View style={styles.statsContainer}>
+            <Text style={styles.statsText}>Total Employees: {employees.length}</Text>
+          </View>
+        )}
+      </View>
+    </>
+  );
+
+  // Create footer component for FlatList
+  const ListFooterComponent = () => (
+    <View style={styles.section}>
+      <Text style={styles.sectionTitle}>System Features</Text>
+      <View style={styles.infoBox}>
+        <Text style={styles.infoText}>
+          This professional HR system provides:
+        </Text>
+        <Text style={styles.listItem}>• Complete employee record management</Text>
+        <Text style={styles.listItem}>
+          • {Platform.OS === 'web' ? 'Browser storage (AsyncStorage)' : 'Secure SQLite database storage'}
+        </Text>
+        <Text style={styles.listItem}>• Real-time data synchronization</Text>
+        <Text style={styles.listItem}>• Professional user interface</Text>
+        <Text style={styles.listItem}>• Data validation and error handling</Text>
+        <Text style={styles.listItem}>• Confirmation dialogs for data safety</Text>
+        <Text style={styles.listItem}>• Cross-platform compatibility (Mobile & Web)</Text>
+      </View>
+    </View>
+  );
+
+  return (
+    <View style={styles.container}>
+      <StatusBar barStyle="dark-content" backgroundColor="#f8f9fa" />
+      
+      <FlatList
+        data={employees}
+        renderItem={renderEmployee}
+        keyExtractor={(item) => item.id.toString()}
+        ListHeaderComponent={ListHeaderComponent}
+        ListFooterComponent={ListFooterComponent}
+        ListEmptyComponent={null} // We handle empty state in header
+        contentContainerStyle={styles.scrollView}
+        showsVerticalScrollIndicator={true}
+        scrollEnabled={true}
+        ItemSeparatorComponent={() => <View style={{ height: 12 }} />}
+        style={{ flex: 1 }}
+      />
     </View>
   );
 }
@@ -449,8 +410,8 @@ const styles = StyleSheet.create({
     backgroundColor: '#f8f9fa',
   },
   scrollView: {
-    flex: 1,
     padding: 20,
+    paddingBottom: 40, // Add extra padding at bottom for better scrolling
   },
   header: {
     alignItems: 'center',
@@ -577,7 +538,8 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
   employeeList: {
-    maxHeight: 500,
+    maxHeight: undefined,
+    flex: 1,
   },
   employeeCard: {
     flexDirection: 'row',
@@ -597,6 +559,7 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.05,
     shadowRadius: 4,
     elevation: 2,
+    marginHorizontal: 0, // Ensure no horizontal margin issues
   },
   employeeInfo: {
     flex: 1,
