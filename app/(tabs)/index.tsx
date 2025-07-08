@@ -1,7 +1,7 @@
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { Image as ExpoImage } from 'expo-image';
 import * as ImagePicker from 'expo-image-picker';
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
     Alert,
     FlatList,
@@ -25,6 +25,27 @@ export default function HomeScreen() {
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [storage, setStorage] = useState<DatabaseInterface | null>(null);
   const [photo, setPhoto] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<number | null>(null);
+  const [isAddingEmployee, setIsAddingEmployee] = useState(false);
+  const [isFormCollapsed, setIsFormCollapsed] = useState(false);
+
+  // Refs for input fields to maintain focus on web
+  const nameInputRef = useRef<TextInput>(null);
+  const designationInputRef = useRef<TextInput>(null);
+  const departmentInputRef = useRef<TextInput>(null);
+
+  // Web-specific input handlers to prevent focus loss
+  const handleNameChange = useCallback((text: string) => {
+    setName(text);
+  }, []);
+
+  const handleDesignationChange = useCallback((text: string) => {
+    setDesignation(text);
+  }, []);
+
+  const handleDepartmentChange = useCallback((text: string) => {
+    setDepartment(text);
+  }, []);
 
   useEffect(() => {
     const init = async () => {
@@ -69,26 +90,55 @@ export default function HomeScreen() {
       allowsEditing: true,
       aspect: [1, 1],
       quality: 0.7,
-      base64: Platform.OS === 'web', // Only get base64 on web
+      base64: true, // Always get base64 for cross-platform compatibility
     });
     if (!result.canceled && result.assets && result.assets.length > 0) {
-      const pickedUri = result.assets[0].uri;
-      if (Platform.OS === 'web') {
-        if (result.assets[0].base64) {
-          setPhoto(`data:image/jpeg;base64,${result.assets[0].base64}`);
-        } else {
-          setPhoto(pickedUri); // fallback
-        }
+      const asset = result.assets[0];
+      if (asset.base64) {
+        // Use base64 for cross-platform compatibility
+        setPhoto(`data:image/jpeg;base64,${asset.base64}`);
       } else {
-        setPhoto(pickedUri); // Use picker URI directly on Android/iOS
+        // Fallback to URI if base64 is not available
+        setPhoto(asset.uri);
       }
     }
   };
 
+  const convertUriToBase64 = async (uri: string): Promise<string> => {
+    if (uri.startsWith('data:image/')) {
+      return uri; // Already a base64 data URL
+    }
+    
+    try {
+      const response = await fetch(uri);
+      const blob = await response.blob();
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+          resolve(reader.result as string);
+        };
+        reader.onerror = reject;
+        reader.readAsDataURL(blob);
+      });
+    } catch (error) {
+      console.error('Error converting URI to base64:', error);
+      return uri; // Fallback to original URI
+    }
+  };
+
   const uploadImageToBackend = async (uri: string): Promise<string> => {
-    // TODO: Replace with actual upload logic
-    // For now, just return the local URI
-    return uri;
+    // For now, we'll store the base64 data directly in the database
+    // In a production app, you would upload to a cloud storage service like AWS S3, Cloudinary, etc.
+    if (uri.startsWith('data:image/')) {
+      // Already a base64 data URL, return as is
+      return uri;
+    } else if (uri.startsWith('file://')) {
+      // Local file URI - convert to base64
+      return await convertUriToBase64(uri);
+    } else {
+      // Other URI types (http, https, etc.)
+      return uri;
+    }
   };
 
   const addEmployee = async () => {
@@ -97,11 +147,17 @@ export default function HomeScreen() {
       return;
     }
     if (!storage) return;
+    
+    setIsAddingEmployee(true);
+    
     try {
       let uploadedPhotoUrl = '';
       if (photo) {
+        console.log('🖼️ Processing image for cross-platform compatibility...');
         uploadedPhotoUrl = await uploadImageToBackend(photo);
+        console.log('✅ Image processed successfully');
       }
+      
       const currentTime = new Date().toISOString();
       await storage.addEmployee({
         name: name.trim(),
@@ -110,10 +166,12 @@ export default function HomeScreen() {
         created_at: currentTime,
         photo_url: uploadedPhotoUrl,
       });
+      
       setName('');
       setDesignation('');
       setDepartment('');
       setPhoto(null);
+      
       // Reload employees
       const updatedEmployees = await storage.loadEmployees();
       setEmployees(updatedEmployees);
@@ -125,34 +183,59 @@ export default function HomeScreen() {
       } else {
         Alert.alert('Error', 'Failed to add employee');
       }
+    } finally {
+      setIsAddingEmployee(false);
     }
   };
 
   const deleteEmployee = (id: number) => {
-    Alert.alert(
-      'Confirm Delete',
-      'Are you sure you want to delete this employee?',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Delete',
-          style: 'destructive',
-          onPress: async () => {
-            if (!storage) return;
-            
-            try {
-              await storage.deleteEmployee(id);
-              const updatedEmployees = await storage.loadEmployees();
-              setEmployees(updatedEmployees);
-              Alert.alert('Success', 'Employee deleted successfully!');
-            } catch (error) {
-              console.error('Error deleting employee:', error);
-              Alert.alert('Error', 'Failed to delete employee');
-            }
+    // For web platform, use a more direct approach
+    if (Platform.OS === 'web') {
+      if (window.confirm('Are you sure you want to delete this employee?')) {
+        handleDeleteEmployee(id);
+      }
+    } else {
+      Alert.alert(
+        'Confirm Delete',
+        'Are you sure you want to delete this employee?',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Delete',
+            style: 'destructive',
+            onPress: () => handleDeleteEmployee(id),
           },
-        },
-      ]
-    );
+        ]
+      );
+    }
+  };
+
+  const handleDeleteEmployee = async (id: number) => {
+    if (!storage) return;
+    
+    setDeletingId(id);
+    
+    try {
+      await storage.deleteEmployee(id);
+      const updatedEmployees = await storage.loadEmployees();
+      setEmployees(updatedEmployees);
+      
+      if (Platform.OS === 'web') {
+        alert('Employee deleted successfully!');
+      } else {
+        Alert.alert('Success', 'Employee deleted successfully!');
+      }
+    } catch (error) {
+      console.error('Error deleting employee:', error);
+      const errorMessage = 'Failed to delete employee';
+      if (Platform.OS === 'web') {
+        alert(errorMessage);
+      } else {
+        Alert.alert('Error', errorMessage);
+      }
+    } finally {
+      setDeletingId(null);
+    }
   };
 
   const clearAllEmployees = () => {
@@ -237,16 +320,28 @@ export default function HomeScreen() {
         </Text>
       </View>
       <TouchableOpacity
-        style={styles.deleteButton}
+        style={[
+          styles.deleteButton,
+          deletingId === item.id && styles.deleteButtonDisabled
+        ]}
         onPress={() => deleteEmployee(item.id)}
+        activeOpacity={0.7}
+        hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+        accessibilityLabel="Delete employee"
+        accessibilityRole="button"
+        disabled={deletingId === item.id}
       >
-        <Text style={styles.deleteButtonText}>×</Text>
+        {deletingId === item.id ? (
+          <MaterialIcons name="hourglass-empty" size={20} color="white" />
+        ) : (
+          <MaterialIcons name="delete" size={20} color="white" />
+        )}
       </TouchableOpacity>
     </View>
   );
 
   // Create header component for FlatList
-  const ListHeaderComponent = () => (
+  const ListHeaderComponent = React.memo(() => (
     <>
       {/* Header */}
       <View style={styles.header}>
@@ -254,65 +349,6 @@ export default function HomeScreen() {
         <Text style={styles.subtitle}>
           Professional HR System with Real-time PostgreSQL Database
         </Text>
-      </View>
-
-      {/* Input Form */}
-      <View style={styles.section}>
-        <Text style={styles.sectionTitle}>Add New Employee</Text>
-        
-        <View style={styles.inputGroup}>
-          <Text style={styles.inputLabel}>Full Name</Text>
-          <TextInput
-            style={styles.input}
-            placeholder="Enter employee's full name"
-            value={name}
-            onChangeText={setName}
-            placeholderTextColor="#999"
-          />
-        </View>
-        
-        <View style={styles.inputGroup}>
-          <Text style={styles.inputLabel}>Designation</Text>
-          <TextInput
-            style={styles.input}
-            placeholder="e.g., Software Engineer, Manager"
-            value={designation}
-            onChangeText={setDesignation}
-            placeholderTextColor="#999"
-          />
-        </View>
-
-        <View style={styles.inputGroup}>
-          <Text style={styles.inputLabel}>Department</Text>
-          <TextInput
-            style={styles.input}
-            placeholder="e.g., Engineering, Marketing, HR"
-            value={department}
-            onChangeText={setDepartment}
-            placeholderTextColor="#999"
-          />
-        </View>
-        
-        <View style={styles.inputGroup}>
-          <Text style={styles.inputLabel}>Photo</Text>
-          <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-            <TouchableOpacity style={styles.photoButton} onPress={pickImage}>
-              <MaterialIcons name="cloud-upload" size={20} color="#fff" style={{ marginRight: 8 }} />
-              <Text style={styles.photoButtonText}>Upload Image</Text>
-            </TouchableOpacity>
-            {photo && (
-              <ExpoImage
-                source={{ uri: photo }}
-                style={{ width: 48, height: 48, borderRadius: 24, marginLeft: 12 }}
-                contentFit="cover"
-              />
-            )}
-          </View>
-        </View>
-        
-        <TouchableOpacity style={styles.addButton} onPress={addEmployee}>
-          <Text style={styles.buttonText}>Add Employee</Text>
-        </TouchableOpacity>
       </View>
 
       {/* Employee List Header */}
@@ -360,10 +396,10 @@ export default function HomeScreen() {
         )}
       </View>
     </>
-  );
+  ));
 
   // Create footer component for FlatList
-  const ListFooterComponent = () => (
+  const ListFooterComponent = React.memo(() => (
     <View style={styles.section}>
       <Text style={styles.sectionTitle}>System Features</Text>
       <View style={styles.infoBox}>
@@ -381,16 +417,130 @@ export default function HomeScreen() {
         <Text style={styles.listItem}>• Cross-platform compatibility (Mobile & Web)</Text>
       </View>
     </View>
-  );
+  ));
 
   return (
     <View style={styles.container}>
       <StatusBar barStyle="dark-content" backgroundColor="#f8f9fa" />
       
+      {/* Collapsible Input Form */}
+      <View style={[styles.inputFormContainer, isFormCollapsed && styles.collapsedForm]}>
+        <View style={styles.formHeader}>
+          <Text style={styles.sectionTitle}>Add New Employee</Text>
+          <TouchableOpacity 
+            style={styles.collapseButton}
+            onPress={() => setIsFormCollapsed(!isFormCollapsed)}
+          >
+            <MaterialIcons 
+              name={isFormCollapsed ? "expand-more" : "expand-less"} 
+              size={24} 
+              color="#3498db" 
+            />
+          </TouchableOpacity>
+        </View>
+        
+        {!isFormCollapsed && (
+          <>
+            <View style={styles.inputRow}>
+              <View style={styles.inputGroup}>
+                <Text style={styles.inputLabel}>Full Name</Text>
+                <TextInput
+                  ref={nameInputRef}
+                  style={styles.input}
+                  placeholder="Enter name"
+                  value={name}
+                  onChangeText={handleNameChange}
+                  placeholderTextColor="#999"
+                  autoComplete="name"
+                  autoCorrect={false}
+                  autoCapitalize="words"
+                  returnKeyType="next"
+                  blurOnSubmit={false}
+                  selectTextOnFocus={false}
+                  {...(Platform.OS === 'android' && {
+                    textAlignVertical: 'center',
+                  })}
+                />
+              </View>
+              
+              <View style={styles.inputGroup}>
+                <Text style={styles.inputLabel}>Designation</Text>
+                <TextInput
+                  ref={designationInputRef}
+                  style={styles.input}
+                  placeholder="e.g., Engineer"
+                  value={designation}
+                  onChangeText={handleDesignationChange}
+                  placeholderTextColor="#999"
+                  autoComplete="off"
+                  autoCorrect={false}
+                  autoCapitalize="words"
+                  returnKeyType="next"
+                  blurOnSubmit={false}
+                  selectTextOnFocus={false}
+                  {...(Platform.OS === 'android' && {
+                    textAlignVertical: 'center',
+                  })}
+                />
+              </View>
+            </View>
+
+            <View style={styles.inputRow}>
+              <View style={styles.inputGroup}>
+                <Text style={styles.inputLabel}>Department</Text>
+                <TextInput
+                  ref={departmentInputRef}
+                  style={styles.input}
+                  placeholder="e.g., Engineering"
+                  value={department}
+                  onChangeText={handleDepartmentChange}
+                  placeholderTextColor="#999"
+                  autoComplete="off"
+                  autoCorrect={false}
+                  autoCapitalize="words"
+                  returnKeyType="done"
+                  blurOnSubmit={true}
+                  selectTextOnFocus={false}
+                  {...(Platform.OS === 'android' && {
+                    textAlignVertical: 'center',
+                  })}
+                />
+              </View>
+              
+              <View style={styles.inputGroup}>
+                <Text style={styles.inputLabel}>Photo</Text>
+                <TouchableOpacity style={styles.photoButton} onPress={pickImage}>
+                  <MaterialIcons name="cloud-upload" size={16} color="#fff" style={{ marginRight: 4 }} />
+                  <Text style={styles.photoButtonText}>Upload</Text>
+                </TouchableOpacity>
+                {photo && (
+                  <ExpoImage
+                    source={{ uri: photo }}
+                    style={{ width: 32, height: 32, borderRadius: 16, marginLeft: 8 }}
+                    contentFit="cover"
+                  />
+                )}
+              </View>
+            </View>
+            
+            <TouchableOpacity 
+              style={[styles.addButton, isAddingEmployee && styles.addButtonDisabled]} 
+              onPress={addEmployee}
+              disabled={isAddingEmployee}
+            >
+              <Text style={styles.buttonText}>
+                {isAddingEmployee ? 'Adding...' : 'Add Employee'}
+              </Text>
+            </TouchableOpacity>
+          </>
+        )}
+      </View>
+      
+      {/* Employee List - Below input form */}
       <FlatList
         data={employees}
         renderItem={renderEmployee}
-        keyExtractor={(item) => item.id.toString()}
+        keyExtractor={(item) => `employee-${item.id}`}
         ListHeaderComponent={ListHeaderComponent}
         ListFooterComponent={ListFooterComponent}
         ListEmptyComponent={null} // We handle empty state in header
@@ -399,6 +549,14 @@ export default function HomeScreen() {
         scrollEnabled={true}
         ItemSeparatorComponent={() => <View style={{ height: 12 }} />}
         style={{ flex: 1 }}
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="interactive"
+        removeClippedSubviews={false}
+        getItemLayout={(data, index) => ({
+          length: 80, // Approximate height of each item
+          offset: 80 * index,
+          index,
+        })}
       />
     </View>
   );
@@ -489,6 +647,10 @@ const styles = StyleSheet.create({
     color: 'white',
     fontSize: 18,
     fontWeight: '700',
+  },
+  addButtonDisabled: {
+    backgroundColor: '#95a5a6',
+    opacity: 0.7,
   },
   listHeader: {
     flexDirection: 'row',
@@ -599,9 +761,9 @@ const styles = StyleSheet.create({
   },
   deleteButton: {
     backgroundColor: '#e74c3c',
-    width: 36,
-    height: 36,
-    borderRadius: 18,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
     alignItems: 'center',
     justifyContent: 'center',
     marginLeft: 16,
@@ -613,6 +775,13 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.3,
     shadowRadius: 4,
     elevation: 4,
+    ...(Platform.OS === 'web' && { cursor: 'pointer' }),
+    minWidth: 40,
+    minHeight: 40,
+  },
+  deleteButtonDisabled: {
+    backgroundColor: '#95a5a6',
+    opacity: 0.7,
   },
   deleteButtonText: {
     color: 'white',
@@ -649,5 +818,40 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontWeight: '600',
     fontSize: 15,
+  },
+  inputFormContainer: {
+    backgroundColor: '#f8f9fa',
+    paddingHorizontal: 20,
+    paddingTop: 15,
+    paddingBottom: 15,
+    borderBottomWidth: 1,
+    borderBottomColor: '#e0e0e0',
+  },
+  collapsedForm: {
+    paddingBottom: 10,
+  },
+  formHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 15,
+  },
+  collapseButton: {
+    padding: 8,
+    borderRadius: 8,
+    backgroundColor: '#ffffff',
+    shadowColor: '#000',
+    shadowOffset: {
+      width: 0,
+      height: 2,
+    },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 2,
+  },
+  inputRow: {
+    flexDirection: 'row',
+    gap: 12,
+    marginBottom: 12,
   },
 });
